@@ -44,7 +44,7 @@ The Raspberry Pi connects to Azure as the registered device **`rpi-gateway`**. E
 | Embedded hardware | 2 × Arduino Nano ESP32 (ESP32-S3), DHT11 |
 | Firmware | C++, Arduino framework, PlatformIO |
 | Local connectivity | Wi-Fi, MQTT, Mosquitto |
-| Gateway | Raspberry Pi OS, Python 3, Paho MQTT |
+| Gateway | Raspberry Pi OS, Python 3, Paho MQTT, systemd |
 | Cloud | Azure IoT Hub, `azure-iot-device` Python SDK |
 | Testing | Serial Monitor, Mosquitto subscriber, Azure Cloud Shell |
 
@@ -95,6 +95,7 @@ All forwarded messages retain at least `deviceId`, `value`, and `unit`.
 │   └── src/main.cpp
 ├── raspberry-pi/
 │   ├── gateway.py
+│   ├── iot-gateway.service
 │   └── requirements.txt
 ├── .gitignore
 └── README.md
@@ -134,13 +135,18 @@ The ESP32 boards connect to the Pi's LAN address. The Python gateway connects to
 
 ### 3. Python gateway
 
-On the Raspberry Pi, inside the `raspberry-pi/` directory:
+On the Raspberry Pi, deploy the gateway to `/home/mqtt_admin/iot-gateway` (the installation path used by the supplied systemd unit). From the repository root:
 
 ```bash
+mkdir -p ~/iot-gateway
+cp raspberry-pi/gateway.py raspberry-pi/requirements.txt ~/iot-gateway/
+cd ~/iot-gateway
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
+
+If you already have the gateway installed at this location, you can skip the copy and installation steps.
 
 The gateway reads credentials from a **local file outside this repository**:
 
@@ -164,13 +170,39 @@ chmod 700 ~/.config/iot-gateway
 chmod 600 ~/.config/iot-gateway/credentials.json
 ```
 
-Start the gateway:
+To test the gateway interactively before enabling the service:
 
 ```bash
 python gateway.py
 ```
 
-### 4. Azure IoT Hub
+Stop this foreground process using `Ctrl+C` before starting the systemd service. Running two gateway instances simultaneously is not recommended.
+
+### 4. Automatic startup with systemd
+
+The gateway runs as a **systemd service**: it starts automatically when the Raspberry Pi boots and is restarted after process failure with a 10-second delay. It runs under the non-root `mqtt_admin` account and accesses its credentials through the separate local configuration file; no secrets are embedded in the unit.
+
+From the repository root, install the included unit:
+
+```bash
+sudo cp raspberry-pi/iot-gateway.service /etc/systemd/system/iot-gateway.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now iot-gateway.service
+```
+
+The unit assumes the Linux user `mqtt_admin`, Mosquitto installed as `mosquitto.service`, and a Python virtual environment at `/home/mqtt_admin/iot-gateway/.venv`. Adjust `User`, `WorkingDirectory`, `HOME`, and `ExecStart` if you use different paths or a different user.
+
+Check service status, inspect recent logs, or restart it:
+
+```bash
+systemctl status iot-gateway.service --no-pager
+journalctl -u iot-gateway.service -n 30 --no-pager
+sudo systemctl restart iot-gateway.service
+```
+
+Once enabled, the service runs independently of your SSH session; there is no need to execute `python gateway.py` manually.
+
+### 5. Azure IoT Hub
 
 The prototype was verified using **Azure IoT Hub Free (F1)**. Register a device with ID `rpi-gateway`, enable it, and configure the gateway using that device's connection string.
 
@@ -185,6 +217,7 @@ The following behavior was observed during end-to-end testing on **20 October 20
 - The gateway successfully invoked the Azure IoT Hub SDK to forward measurements.
 - Azure Cloud Shell independently displayed messages from **both** `esp32-01` and `esp32-02`, preserving the original `deviceId` and measured values.
 - The 60-second per-topic forwarding interval was observed in operation.
+- **Automatic startup was successfully tested after rebooting the Raspberry Pi** on 20 October 2026. The systemd service returned to `active (running)` and continued forwarding measurements from both ESP32 boards.
 
 Example verification command in Azure Cloud Shell:
 
@@ -202,12 +235,12 @@ The Azure event's `origin` is `rpi-gateway` because the Raspberry Pi owns the Az
 - Real Wi-Fi, MQTT, and Azure credentials are **not stored in the repository**. `secrets.h`, `credentials.json`, and common secret-file formats are excluded using `.gitignore`.
 - The local MQTT broker currently uses **unencrypted TCP/1883** on the trusted LAN. Communication with Azure IoT Hub uses TLS.
 - The gateway handles malformed JSON and checks for the required fields, but does **not** perform comprehensive JSON type/schema validation.
-- The gateway is currently started manually; an automatic `systemd` service has not been configured.
+- The gateway runs as a `systemd` service with automatic startup and restart after process failure, but it does not buffer sensor messages while offline.
 - More extensive connection recovery, telemetry buffering, stronger credential management, and integration tests would be appropriate for a production deployment.
 
 ## Potential improvements
 
-Future iterations could add mutual TLS for local MQTT, independent MQTT identities and permissions for each device, persistent gateway operation, offline buffering, and automated testing.
+Future iterations could add mutual TLS for local MQTT, independent MQTT identities and permissions for each device, improved reconnection handling, offline buffering, and automated testing.
 
 ---
 

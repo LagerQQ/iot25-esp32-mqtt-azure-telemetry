@@ -1,0 +1,20 @@
+[Unit]
+Description=ESP32 MQTT to Azure IoT Hub Gateway
+Wants=network-online.target mosquitto.service
+After=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+User=mqtt_admin
+WorkingDirectory=/home/mqtt_admin/iot-gateway
+Environment=HOME=/home/mqtt_admin
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/mqtt_admin/iot-gateway/.venv/bin/python /home/mqtt_admin/iot-gateway/gateway.py
+
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
